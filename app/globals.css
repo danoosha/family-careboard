@@ -1,0 +1,48 @@
+@import url('https://fonts.googleapis.com/css2?family=Nunito:wght@300;400;500;600;700;800&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --font-nunito: 'Nunito', sans-serif;
+}
+
+@layer base {
+  * {
+    -webkit-tap-highlight-color: transparent;
+    box-sizing: border-box;
+  }
+
+  html {
+    font-family: var(--font-nunito), sans-serif;
+    -webkit-text-size-adjust: 100%;
+    scroll-behavior: smooth;
+  }
+
+  body {
+    background-color: #F7F5F2;
+    color: #4A4A6A;
+    min-height: 100dvh;
+    overscroll-behavior: none;
+  }
+}
+
+@layer components {
+  .card {
+    @apply bg-white rounded-3xl shadow-card p-4;
+  }
+
+  .section-label {
+    @apply text-xs font-bold uppercase tracking-widest text-muted mb-3;
+  }
+
+  .bottom-nav-clearance {
+    padding-bottom: calc(5rem + env(safe-area-inset-bottom));
+  }
+}
+
+@layer utilities {
+  .no-scrollbar::-webkit-scrollbar { display: none; }
+  .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+}

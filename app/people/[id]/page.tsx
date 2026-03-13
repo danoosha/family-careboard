@@ -18,8 +18,6 @@ import type {
   Appointment,
   PreventiveCheck,
   Vaccination,
-  CareJourney,
-  CareJourneyStep,
   PersonDoctor,
   Medication,
   Prescription,
@@ -30,13 +28,54 @@ import type {
 
 export const revalidate = 0;
 
+type CareJourneyRow = {
+  id: string;
+  person_id: string;
+  title: string;
+  description?: string | null;
+  status: string;
+  created_at?: string | null;
+};
+
+type CareJourneyStepRow = {
+  id: string;
+  care_journey_id: string;
+  title?: string | null;
+  step_date?: string | null;
+  notes?: string | null;
+  created_at?: string | null;
+};
+
+type CareJourneyWithSteps = CareJourneyRow & {
+  steps: CareJourneyStepRow[];
+  nextStep: CareJourneyStepRow | null;
+};
+
 interface PersonPageProps {
   params: { id: string };
 }
 
+function getNextStep(steps: CareJourneyStepRow[]) {
+  const now = new Date();
+
+  return (
+    [...steps]
+      .filter((step) => step.step_date)
+      .sort((a, b) => {
+        const aTime = a.step_date ? new Date(a.step_date).getTime() : Infinity;
+        const bTime = b.step_date ? new Date(b.step_date).getTime() : Infinity;
+        return aTime - bTime;
+      })
+      .find((step) => {
+        if (!step.step_date) return false;
+        return new Date(step.step_date).getTime() >= now.getTime();
+      }) ?? null
+  );
+}
+
 export default async function PersonPage({ params }: PersonPageProps) {
   const supabase = createClient();
-  const { id } = params;
+  const id = params.id;
 
   const [
     { data: person, error: personError },
@@ -44,7 +83,6 @@ export default async function PersonPage({ params }: PersonPageProps) {
     { data: preventiveChecks },
     { data: vaccinations },
     { data: journeys },
-    { data: journeySteps },
     { data: personDoctors },
     { data: medications },
     { data: prescriptions },
@@ -74,15 +112,9 @@ export default async function PersonPage({ params }: PersonPageProps) {
 
     supabase
       .from("care_journeys")
-      .select("*")
+      .select("id, person_id, title, description, status, created_at")
       .eq("person_id", id)
       .order("created_at", { ascending: false }),
-
-    supabase
-      .from("care_journey_steps")
-      .select("*")
-      .eq("person_id", id)
-      .order("step_date", { ascending: true }),
 
     supabase
       .from("person_doctors")
@@ -99,54 +131,80 @@ export default async function PersonPage({ params }: PersonPageProps) {
       .from("prescriptions")
       .select("*")
       .eq("person_id", id)
-      .order("date_prescribed", { ascending: false }),
+      .order("issued_at", { ascending: false }),
 
     supabase
       .from("referrals")
       .select("*")
       .eq("person_id", id)
-      .order("referral_date", { ascending: false }),
+      .order("issued_at", { ascending: false }),
 
     supabase
       .from("test_results")
       .select("*")
       .eq("person_id", id)
-      .order("test_date", { ascending: false }),
+      .order("taken_at", { ascending: false }),
 
     supabase
       .from("documents")
       .select("*")
       .eq("person_id", id)
-      .order("document_date", { ascending: false }),
+      .order("uploaded_at", { ascending: false }),
   ]);
 
   if (personError || !person) {
     notFound();
   }
 
+  const { data: journeySteps } =
+    journeys && journeys.length > 0
+      ? await supabase
+          .from("care_journey_steps")
+          .select("id, care_journey_id, title, step_date, notes, created_at")
+          .in(
+            "care_journey_id",
+            journeys.map((journey) => journey.id),
+          )
+          .order("step_date", { ascending: true })
+      : { data: [] };
+
   const typedPerson = person as Person;
   const typedAppts = (appointments as Appointment[]) ?? [];
   const typedChecks = (preventiveChecks as PreventiveCheck[]) ?? [];
   const typedVax = (vaccinations as Vaccination[]) ?? [];
-  const typedJourneys = (journeys as CareJourney[]) ?? [];
-  const typedSteps = (journeySteps as CareJourneyStep[]) ?? [];
   const typedDoctors = (personDoctors as PersonDoctor[]) ?? [];
   const typedMeds = (medications as Medication[]) ?? [];
   const typedRx = (prescriptions as Prescription[]) ?? [];
   const typedReferrals = (referrals as Referral[]) ?? [];
   const typedResults = (testResults as TestResult[]) ?? [];
   const typedDocs = (documents as Document[]) ?? [];
+  const typedJourneys = (journeys as CareJourneyRow[]) ?? [];
+  const typedSteps = (journeySteps as CareJourneyStepRow[]) ?? [];
+
+  const journeysWithSteps: CareJourneyWithSteps[] = typedJourneys.map(
+    (journey) => {
+      const stepsForJourney = typedSteps.filter(
+        (step) => step.care_journey_id === journey.id,
+      );
+
+      return {
+        ...journey,
+        steps: stepsForJourney,
+        nextStep: getNextStep(stepsForJourney),
+      };
+    },
+  );
 
   const activeJourneys = typedJourneys.filter((j) => j.status === "active");
 
   const alertChecks = typedChecks.filter((c) =>
-    ["overdue", "missing", "due_soon"].includes(c.status ?? "")
+    ["overdue", "missing", "due_soon"].includes(c.status ?? ""),
   );
 
   const upcomingVax = typedVax.filter((v) => {
     if (!v.next_due_at) return false;
     const days = Math.ceil(
-      (new Date(v.next_due_at).getTime() - Date.now()) / 86400000
+      (new Date(v.next_due_at).getTime() - Date.now()) / 86400000,
     );
     return days >= 0 && days <= 90;
   });
@@ -154,13 +212,7 @@ export default async function PersonPage({ params }: PersonPageProps) {
   const timelineCount =
     typedAppts.length +
     typedChecks.filter((c) => !!c.next_due_at).length +
-    typedVax.filter((v) => !!v.next_due_at).length +
-    typedSteps.length;
-
-  const journeysWithSteps = typedJourneys.map((journey) => ({
-    ...journey,
-    steps: typedSteps.filter((step) => step.care_journey_id === journey.id),
-  }));
+    typedVax.filter((v) => !!v.next_due_at).length;
 
   return (
     <AppShell>
@@ -195,16 +247,12 @@ export default async function PersonPage({ params }: PersonPageProps) {
           <ProfileSection
             title="Care Journeys"
             icon="📋"
-            count={typedJourneys.length}
+            count={journeysWithSteps.length}
           >
             <CareJourneysSection journeys={journeysWithSteps} />
           </ProfileSection>
 
-          <ProfileSection
-            title="Doctors"
-            icon="🩺"
-            count={typedDoctors.length}
-          >
+          <ProfileSection title="Doctors" icon="🩺" count={typedDoctors.length}>
             <DoctorsSection personDoctors={typedDoctors} />
           </ProfileSection>
 
@@ -248,11 +296,7 @@ export default async function PersonPage({ params }: PersonPageProps) {
             <TestResultsSection results={typedResults} />
           </ProfileSection>
 
-          <ProfileSection
-            title="Documents"
-            icon="📁"
-            count={typedDocs.length}
-          >
+          <ProfileSection title="Documents" icon="📁" count={typedDocs.length}>
             <DocumentsSection documents={typedDocs} />
           </ProfileSection>
         </div>

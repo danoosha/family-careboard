@@ -73,6 +73,12 @@ function getTimeRangeCutoff(range: TimeRange): Date {
   return d;
 }
 
+/**
+ * Care steps deduplication rule:
+ * If a care_step's date is within 1 day of an appointment that belongs to the same
+ * care_journey (i.e. appointment.care_journey_id is set), we skip the care_step —
+ * the appointment already represents that event in the timeline.
+ */
 function getAllTimelineItems({
   appointments,
   preventiveChecks,
@@ -80,6 +86,17 @@ function getAllTimelineItems({
   doctors = [],
 }: Omit<TimelineSectionProps, "person" | "vaccinations">): PersonTimelineItem[] {
   const items: PersonTimelineItem[] = [];
+
+  // Build a set of (journey_id, date) tuples from linked appointments
+  // so we can suppress care_steps that are already represented
+  const linkedApptDates = new Set<string>();
+  for (const appt of appointments ?? []) {
+    const full = appt as AppointmentFull;
+    if (full.care_journey_id && appt.starts_at) {
+      const dateKey = `${full.care_journey_id}::${appt.starts_at.slice(0, 10)}`;
+      linkedApptDates.add(dateKey);
+    }
+  }
 
   for (const appt of appointments ?? []) {
     if (!appt.starts_at) continue;
@@ -90,7 +107,6 @@ function getAllTimelineItems({
     const doctorLabel = doctor ? doctor.doctor_name : null;
     const locationLabel = appt.location || null;
 
-    // subtitle: show doctor name + location if available
     const subtitleParts = [doctorLabel, locationLabel].filter(Boolean);
     const subtitle = subtitleParts.length > 0
       ? subtitleParts.join(" · ")
@@ -116,7 +132,7 @@ function getAllTimelineItems({
         id: `prev-${check.id}`,
         title: check.check_type || "Preventive check",
         date: scheduledDate,
-        subtitle: check.notes || "",
+        subtitle: (check as any).notes || "",
         kind: "preventive",
       });
     }
@@ -132,12 +148,22 @@ function getAllTimelineItems({
     }
   }
 
+  // Care steps: only show if NOT already covered by a linked appointment
+  // on the same day within the same journey
   for (const step of careSteps ?? []) {
     if (!(step as any).step_date) continue;
+
+    const stepDate = (step as any).step_date as string;
+    const journeyId = step.care_journey_id;
+
+    // If there's a linked appointment for this journey on the same date → skip
+    const dateKey = `${journeyId}::${stepDate.slice(0, 10)}`;
+    if (linkedApptDates.has(dateKey)) continue;
+
     items.push({
       id: `step-${step.id}`,
       title: (step as any).title || (step as any).step_title || "Care step",
-      date: (step as any).step_date,
+      date: stepDate,
       subtitle: (step as any).notes || "",
       kind: "care_step",
     });
@@ -228,7 +254,7 @@ export default function TimelineSection({
 
   const pastItems = allItems
     .filter((item) => new Date(item.date) < now)
-    .reverse(); // most recent first
+    .reverse();
 
   // ─── Cancel ──────────────────────────────────────────────────────────────
   async function handleCancel(appt: AppointmentFull, scope: RecurringScope) {
@@ -537,7 +563,7 @@ function TimelineRow({
           </p>
         )}
 
-        {/* Action buttons — only for appointments (including past) */}
+        {/* Action buttons — only for appointments */}
         {item.kind === "appointment" && item.raw && (
           <div className="flex gap-2 mt-2">
             <button
@@ -609,43 +635,25 @@ function RecurringScopeSelector({
             onChange={() => onChange(s)}
             className="accent-[#3A3370]"
           />
-          <div>
-            <p className="text-sm font-semibold text-heading">
-              {s === "this" ? "This appointment only" : "All appointments in this series"}
-            </p>
-            <p className="text-xs text-stone-400">
-              {s === "this"
-                ? `Only ${actionLabel} this single occurrence`
-                : `${actionLabel === "delete" ? "Delete" : "Cancel"} all recurring appointments in the series`}
-            </p>
-          </div>
+          <span className="text-sm text-heading font-medium">
+            {s === "this"
+              ? `${actionLabel === "cancel" ? "Cancel" : "Delete"} this appointment only`
+              : `${actionLabel === "cancel" ? "Cancel" : "Delete"} all recurring appointments`}
+          </span>
         </label>
       ))}
     </div>
   );
 }
 
-// ─── Modal wrapper ────────────────────────────────────────────────────────────
-function Modal({
-  title,
-  onClose,
-  children,
-}: {
-  title: string;
-  onClose: () => void;
-  children: React.ReactNode;
-}) {
+// ─── Modal ────────────────────────────────────────────────────────────────────
+function Modal({ title, onClose, children }: { title: string; onClose: () => void; children: React.ReactNode }) {
   return (
-    <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 px-4 pb-6">
-      <div className="w-full max-w-md bg-white rounded-3xl shadow-xl p-5 max-h-[90vh] overflow-y-auto">
+    <div className="fixed inset-0 z-50 bg-black/35 flex items-end sm:items-center justify-center">
+      <div className="bg-white w-full sm:max-w-lg rounded-t-3xl sm:rounded-3xl p-5 shadow-2xl max-h-[90vh] overflow-y-auto">
         <div className="flex items-center justify-between mb-4">
-          <h2 className="text-base font-bold text-heading">{title}</h2>
-          <button
-            onClick={onClose}
-            className="text-stone-400 hover:text-stone-600 text-xl leading-none"
-          >
-            ×
-          </button>
+          <h2 className="text-lg font-bold text-heading">{title}</h2>
+          <button onClick={onClose} className="text-stone-400 hover:text-stone-600 text-xl leading-none">✕</button>
         </div>
         {children}
       </div>

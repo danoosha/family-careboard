@@ -2,60 +2,45 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import {
-  LayoutDashboard,
-  Users,
-  Stethoscope,
-  FileText,
-  MessageCircle,
-} from "lucide-react";
 
 const NAV_ITEMS = [
-  { href: "/dashboard",  label: "Home",      icon: LayoutDashboard },
-  { href: "/people",     label: "People",    icon: Users },
-  { href: "/doctors",    label: "Doctors",   icon: Stethoscope },
-  { href: "/documents",  label: "Documents", icon: FileText },
-  { href: "/chat",       label: "Chat",      icon: MessageCircle },
+  { href: "/",             icon: "🏠", label: "Home"     },
+  { href: "/people",       icon: "👥", label: "People"   },
+  { href: "/doctors",      icon: "🩺", label: "Doctors"  },
+  { href: "/care-journeys",icon: "📋", label: "Journeys" },
+  { href: "/chat",         icon: "💬", label: "Chat"     },
 ];
 
 export default function BottomNav() {
   const pathname = usePathname();
 
-  return (
-    <nav
-      className="fixed bottom-0 left-0 right-0 bg-white border-t border-border z-40"
-      style={{ paddingBottom: "env(safe-area-inset-bottom)" }}
-    >
-      <div className="flex items-center justify-around h-16 max-w-lg mx-auto px-2">
-        {NAV_ITEMS.map(({ href, label, icon: Icon }) => {
-          const active =
-            href === "/dashboard"
-              ? pathname === "/dashboard"
-              : pathname.startsWith(href);
+  function isActive(href: string) {
+    if (href === "/") return pathname === "/";
+    return pathname.startsWith(href);
+  }
 
+  return (
+    <nav className="fixed bottom-0 left-0 right-0 z-30 bg-white/95 backdrop-blur border-t border-stone-100 pb-safe">
+      <div className="flex items-stretch max-w-lg mx-auto">
+        {NAV_ITEMS.map(({ href, icon, label }) => {
+          const active = isActive(href);
           return (
             <Link
               key={href}
               href={href}
-              className={`flex flex-col items-center justify-center gap-0.5 flex-1 py-2 rounded-2xl transition-all duration-150 ${
-                active
-                  ? "text-[#3A3370]"
-                  : "text-muted"
+              className={`flex flex-col items-center justify-center flex-1 pt-2 pb-1 gap-0.5 transition-colors ${
+                active ? "text-[#3A3370]" : "text-stone-400 hover:text-stone-600"
               }`}
             >
-              <span
-                className={`p-1.5 rounded-xl transition-all duration-150 ${
-                  active ? "bg-[#EAE8F7]" : ""
-                }`}
-              >
-                <Icon
-                  size={20}
-                  strokeWidth={active ? 2.5 : 1.8}
-                />
-              </span>
-              <span className={`text-[10px] font-semibold ${active ? "text-[#3A3370]" : "text-muted"}`}>
+              <span className="text-[18px] leading-none">{icon}</span>
+              <span className={`text-[9px] font-semibold leading-tight tracking-wide ${
+                active ? "text-[#3A3370]" : "text-stone-400"
+              }`}>
                 {label}
               </span>
+              {active && (
+                <span className="absolute bottom-0 w-5 h-0.5 rounded-full bg-[#3A3370]" />
+              )}
             </Link>
           );
         })}

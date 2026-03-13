@@ -10,23 +10,20 @@ import AddReferralForm     from "./AddReferralForm";
 import AddTestResultForm   from "./AddTestResultForm";
 import AddDoctorForm       from "./AddDoctorForm";
 import AddDocumentForm     from "./AddDocumentForm";
-import AddCareJourneyForm  from "@/components/care-journeys/AddCareJourneyForm";
 
 type FormKey =
   | "appointment" | "preventive" | "prescription"
   | "referral" | "test_result" | "doctor" | "document"
-  | "journey"
   | null;
 
 const MENU_ITEMS: { key: Exclude<FormKey, null>; icon: string; label: string }[] = [
-  { key: "appointment",  icon: "🩺", label: "Appointment"      },
+  { key: "appointment",  icon: "🩺", label: "Appointment"    },
   { key: "preventive",   icon: "🔔", label: "Preventive check" },
-  { key: "prescription", icon: "📄", label: "Prescription"     },
-  { key: "referral",     icon: "📨", label: "Referral"         },
-  { key: "test_result",  icon: "🧪", label: "Test result"      },
-  { key: "doctor",       icon: "👨‍⚕️", label: "Doctor"         },
-  { key: "document",     icon: "📁", label: "Document"         },
-  { key: "journey",      icon: "📋", label: "Care Journey"     },
+  { key: "prescription", icon: "📄", label: "Prescription"   },
+  { key: "referral",     icon: "📨", label: "Referral"       },
+  { key: "test_result",  icon: "🧪", label: "Test result"    },
+  { key: "doctor",       icon: "👨‍⚕️", label: "Doctor"       },
+  { key: "document",     icon: "📁", label: "Document"       },
 ];
 
 const FORM_TITLES: Record<Exclude<FormKey, null>, string> = {
@@ -37,12 +34,11 @@ const FORM_TITLES: Record<Exclude<FormKey, null>, string> = {
   test_result:  "Add Test Result",
   doctor:       "Add Doctor",
   document:     "Add Document",
-  journey:      "New Care Journey",
 };
 
 export default function AddMenu() {
-  const [open, setOpen]     = useState(false);
-  const [active, setActive] = useState<FormKey>(null);
+  const [open, setOpen]       = useState(false);
+  const [active, setActive]   = useState<FormKey>(null);
   const router = useRouter();
 
   function closeAll() { setOpen(false); setActive(null); }
@@ -65,7 +61,6 @@ export default function AddMenu() {
     test_result:  AddTestResultForm,
     doctor:       AddDoctorForm,
     document:     AddDocumentForm,
-    journey:      AddCareJourneyForm,
   }[active] : null;
 
   return (
@@ -94,8 +89,7 @@ export default function AddMenu() {
 
       {/* Menu sheet */}
       {open && (
-        <div
-          className="fixed bottom-36 right-4 z-50 bg-white rounded-3xl shadow-card overflow-hidden w-52"
+        <div className="fixed bottom-36 right-4 z-50 bg-white rounded-3xl shadow-card overflow-hidden w-52"
           style={{ marginBottom: "env(safe-area-inset-bottom)" }}
         >
           {MENU_ITEMS.map(({ key, icon, label }) => (
@@ -118,8 +112,7 @@ export default function AddMenu() {
             className="fixed inset-0 z-50 bg-black/30 backdrop-blur-sm"
             onClick={closeAll}
           />
-          <div
-            className="fixed bottom-0 left-0 right-0 z-50 bg-white rounded-t-3xl shadow-card max-h-[90dvh] overflow-y-auto"
+          <div className="fixed bottom-0 left-0 right-0 z-50 bg-white rounded-t-3xl shadow-card max-h-[90dvh] overflow-y-auto"
             style={{ paddingBottom: "env(safe-area-inset-bottom)" }}
           >
             {/* Drag handle */}

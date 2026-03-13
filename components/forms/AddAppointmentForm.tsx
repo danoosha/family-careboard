@@ -118,6 +118,12 @@ export default function AddAppointmentForm({
   const [error, setError] = useState("");
   const [locationAutoFilled, setLocationAutoFilled] = useState(false);
 
+  // ── Inline new journey state ──────────────────────────────────────────────
+  const [showNewJourney, setShowNewJourney] = useState(false);
+  const [newJourneyLoading, setNewJourneyLoading] = useState(false);
+  const [newJourneyError, setNewJourneyError] = useState("");
+  const [newJourneyTitle, setNewJourneyTitle] = useState("");
+
   // ── Inline new doctor state ───────────────────────────────────────────────
   const [showNewDoctor, setShowNewDoctor] = useState(false);
   const [newDoctorLoading, setNewDoctorLoading] = useState(false);
@@ -551,16 +557,76 @@ export default function AddAppointmentForm({
       {/* Care Journey */}
       <Field id="care_journey" label="Care Journey">
         <Select id="care_journey" value={form.care_journey_id}
-          onChange={(e) => set("care_journey_id", e.target.value)} disabled={!form.person_id}>
+          onChange={(e) => {
+            if (e.target.value === "__new__") {
+              setShowNewJourney(true);
+              set("care_journey_id", "");
+            } else {
+              set("care_journey_id", e.target.value);
+              setShowNewJourney(false);
+            }
+          }}
+          disabled={!form.person_id}>
           <option value="">No care journey</option>
           {relevantJourneys.map((j) => (
-            <option key={j.id} value={j.id}>{j.title}{j.status ? ` (${j.status})` : ""}</option>
+            <option key={j.id} value={j.id}>{j.title}{j.status !== "active" ? ` (${j.status})` : ""}</option>
           ))}
+          {form.person_id && (
+            <option value="__new__">+ Create new journey…</option>
+          )}
         </Select>
       </Field>
 
       {!form.person_id && (
         <p className="text-xs text-stone-400 -mt-2">Select a person first to choose a care journey.</p>
+      )}
+
+      {/* Inline new journey */}
+      {showNewJourney && form.person_id && (
+        <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-3 space-y-2 -mt-2">
+          <p className="text-xs font-bold text-emerald-700 uppercase tracking-wide">New care journey</p>
+          <input
+            type="text"
+            value={newJourneyTitle}
+            onChange={(e) => setNewJourneyTitle(e.target.value)}
+            placeholder="Journey title, e.g. ENT follow-up"
+            className="w-full px-3 py-2 text-sm rounded-xl border border-emerald-200 bg-white outline-none focus:ring-2 focus:ring-emerald-300"
+          />
+          {newJourneyError && (
+            <p className="text-xs text-red-500">{newJourneyError}</p>
+          )}
+          <div className="flex gap-2">
+            <button type="button"
+              onClick={() => { setShowNewJourney(false); setNewJourneyTitle(""); setNewJourneyError(""); }}
+              className="flex-1 py-2 rounded-xl border border-emerald-200 text-xs font-bold text-emerald-600 bg-white">
+              Cancel
+            </button>
+            <button type="button"
+              disabled={newJourneyLoading}
+              onClick={async () => {
+                if (!newJourneyTitle.trim()) { setNewJourneyError("Title is required."); return; }
+                setNewJourneyLoading(true);
+                setNewJourneyError("");
+                const selectedPerson = people.find((p) => p.id === form.person_id);
+                const { data, error: err } = await supabase.from("care_journeys").insert({
+                  workspace_id: selectedPerson?.workspace_id,
+                  person_id: form.person_id,
+                  title: newJourneyTitle.trim(),
+                  status: "active",
+                }).select().single();
+                setNewJourneyLoading(false);
+                if (err) { setNewJourneyError(err.message); return; }
+                const newJ = data as CareJourneyOption;
+                setCareJourneys((prev) => [newJ, ...prev]);
+                set("care_journey_id", newJ.id);
+                setShowNewJourney(false);
+                setNewJourneyTitle("");
+              }}
+              className="flex-1 py-2 rounded-xl bg-emerald-600 text-white text-xs font-bold disabled:opacity-60">
+              {newJourneyLoading ? "Creating…" : "Create & select"}
+            </button>
+          </div>
+        </div>
       )}
 
       {/* Location */}

@@ -122,7 +122,8 @@ export default async function PersonPage({ params }: PersonPageProps) {
 
     supabase
       .from("doctors")
-      .select("id, doctor_name, specialty"),
+      .select("id, doctor_name, specialty")
+      .order("doctor_name"),
   ]);
 
   if (personError || !person) {
@@ -141,7 +142,7 @@ export default async function PersonPage({ params }: PersonPageProps) {
   const typedReferrals = (referrals as Referral[]) ?? [];
   const typedResults = (testResults as TestResult[]) ?? [];
   const typedDocs = (documents as Document[]) ?? [];
-  const typedAllDoctors = (allDoctors as { id: string; doctor_name: string; specialty?: string }[]) ?? [];
+  const typedAllDoctors = (allDoctors ?? []) as { id: string; doctor_name: string; specialty?: string }[];
 
   const activeJourneys = typedJourneys.filter((j) => j.status === "active");
 
@@ -162,6 +163,11 @@ export default async function PersonPage({ params }: PersonPageProps) {
     typedChecks.filter((c) => !!c.next_due_at).length +
     typedVax.filter((v) => !!v.next_due_at).length +
     typedSteps.length;
+
+  const journeysWithSteps = typedJourneys.map((journey) => ({
+    ...journey,
+    steps: typedSteps.filter((step) => step.care_journey_id === journey.id),
+  }));
 
   return (
     <AppShell>
@@ -199,11 +205,7 @@ export default async function PersonPage({ params }: PersonPageProps) {
             icon="📋"
             count={typedJourneys.length}
           >
-            <CareJourneysSection
-              journeys={typedJourneys}
-              steps={typedSteps}
-              personColorHex={typedPerson.color_hex}
-            />
+            <CareJourneysSection journeys={journeysWithSteps} />
           </ProfileSection>
 
           <ProfileSection

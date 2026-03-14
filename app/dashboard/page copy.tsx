@@ -1,10 +1,36 @@
+/**
+ * app/dashboard/page.tsx  (or app/page.tsx — wherever your home route is)
+ * 
+ * Family home page — unified timeline across all people.
+ * Uses the same TimelineSection as person pages, extended for multi-person view.
+ */
+
 import { createClient } from "@/lib/supabase/server";
 import Link from "next/link";
 import AppShell from "@/components/layout/AppShell";
-import type { Person, Appointment, CareJourney, CareJourneyStep } from "@/types";
+import type {
+  Person, Appointment, PreventiveCheck, Vaccination,
+  CareJourney, CareJourneyStep,
+} from "@/types";
 
 export const revalidate = 0;
+
 const WORKSPACE_ID = "00000000-0000-4000-8000-000000000001";
+
+interface TimelineEvent {
+  id: string;
+  title: string;
+  date: string;
+  subtitle?: string;
+  kind: "appointment" | "journey_appointment" | "preventive" | "care_step";
+  personId: string;
+  personName: string;
+  personColor: string;
+  journeyId?: string;
+  journeyTitle?: string;
+  appointmentId?: string;
+  careJourneyId?: string;
+}
 
 function formatDate(dateStr: string) {
   const d = new Date(dateStr);
@@ -36,7 +62,7 @@ export default async function HomePage() {
     supabase.from("appointments").select("*")
       .eq("workspace_id", WORKSPACE_ID)
       .neq("status", "cancelled")
-      .gte("starts_at", new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString())
+      .gte("starts_at", new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString())
       .lte("starts_at", new Date(Date.now() + 180 * 24 * 60 * 60 * 1000).toISOString())
       .order("starts_at", { ascending: true }),
     supabase.from("care_journeys").select("*").eq("workspace_id", WORKSPACE_ID).eq("status", "active"),
@@ -54,109 +80,132 @@ export default async function HomePage() {
   const journeyMap = new Map(typedJourneys.map((j) => [j.id, j]));
   const doctorMap = new Map(typedDoctors.map((d) => [d.id, d]));
 
-  interface Event {
-    id: string; title: string; date: string; subtitle?: string;
-    kind: "appointment" | "journey_appointment" | "care_step";
-    personId: string; personName: string; personColor: string;
-    journeyId?: string; journeyTitle?: string;
-  }
-
-  const events: Event[] = [];
+  // Build unified timeline
+  const events: TimelineEvent[] = [];
   const today = new Date(); today.setHours(0,0,0,0);
   const sixMonths = new Date(); sixMonths.setMonth(sixMonths.getMonth() + 6);
 
+  // Track (journey_id, date) to suppress duplicate steps
   const linkedApptDates = new Set<string>();
   for (const appt of typedAppts) {
     const cjId = (appt as any).care_journey_id;
-    if (cjId && appt.starts_at) linkedApptDates.add(`${cjId}::${appt.starts_at.slice(0,10)}`);
+    if (cjId && appt.starts_at) {
+      linkedApptDates.add(`${cjId}::${appt.starts_at.slice(0, 10)}`);
+    }
   }
 
+  // Appointments
   for (const appt of typedAppts) {
     const person = peopleMap.get(appt.person_id);
     if (!person) continue;
     const doctor = doctorMap.get((appt as any).doctor_id);
     const journey = (appt as any).care_journey_id ? journeyMap.get((appt as any).care_journey_id) : null;
-    const subtitleParts = [doctor?.doctor_name, appt.location].filter(Boolean);
+
+    const subtitleParts = [
+      doctor?.doctor_name ?? null,
+      appt.location ?? null,
+    ].filter(Boolean);
+
     events.push({
-      id: `appt-${appt.id}`, title: appt.title || "Appointment",
-      date: appt.starts_at, subtitle: subtitleParts.join(" · ") || "",
+      id: `appt-${appt.id}`,
+      title: appt.title || "Appointment",
+      date: appt.starts_at,
+      subtitle: subtitleParts.join(" · ") || (appt as any).notes || "",
       kind: journey ? "journey_appointment" : "appointment",
-      personId: person.id, personName: person.display_name,
+      personId: person.id,
+      personName: person.display_name,
       personColor: person.color_hex ?? "#C7E6A3",
-      journeyId: journey?.id, journeyTitle: journey?.title,
+      journeyId: journey?.id,
+      journeyTitle: journey?.title,
+      appointmentId: appt.id,
+      careJourneyId: (appt as any).care_journey_id,
     });
   }
 
+  // Care steps (not already represented by appointment)
   for (const step of typedSteps) {
     const stepDate = (step as any).step_date;
     if (!stepDate) continue;
-    if (linkedApptDates.has(`${step.care_journey_id}::${stepDate}`)) continue;
+    const dateKey = `${step.care_journey_id}::${stepDate}`;
+    if (linkedApptDates.has(dateKey)) continue;
+
     const journey = journeyMap.get(step.care_journey_id ?? "");
     if (!journey) continue;
     const person = peopleMap.get(journey.person_id ?? "");
     if (!person) continue;
+
     const d = new Date(stepDate);
     if (d < today || d > sixMonths) continue;
+
     events.push({
-      id: `step-${step.id}`, title: (step as any).title || "Care step",
-      date: stepDate, subtitle: (step as any).notes || "",
+      id: `step-${step.id}`,
+      title: (step as any).title || "Care step",
+      date: stepDate,
+      subtitle: (step as any).notes || "",
       kind: "care_step",
-      personId: person.id, personName: person.display_name,
+      personId: person.id,
+      personName: person.display_name,
       personColor: person.color_hex ?? "#C7E6A3",
-      journeyId: journey.id, journeyTitle: journey.title,
+      journeyId: journey.id,
+      journeyTitle: journey.title,
     });
   }
 
+  // Sort by date
   events.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
 
   const todayEvents = events.filter((e) => formatDate(e.date) === "Today");
   const upcomingEvents = events.filter((e) => formatDate(e.date) !== "Today");
 
-  const KIND = {
-    appointment:         { dot: "bg-[#3A3370]",   border: "border-stone-100" },
-    journey_appointment: { dot: "bg-emerald-500",  border: "border-emerald-100" },
-    care_step:           { dot: "bg-purple-400",   border: "border-purple-100" },
+  const KIND_COLORS = {
+    appointment:         { dot: "bg-[#3A3370]", border: "border-stone-100" },
+    journey_appointment: { dot: "bg-emerald-500", border: "border-emerald-100" },
+    preventive:          { dot: "bg-amber-400", border: "border-amber-100" },
+    care_step:           { dot: "bg-purple-400", border: "border-purple-100" },
   };
 
-  function EventCard({ event }: { event: Event }) {
-    const cfg = KIND[event.kind];
+  function renderEvent(event: TimelineEvent) {
+    const cfg = KIND_COLORS[event.kind];
     const isToday = formatDate(event.date) === "Today";
+
     return (
-      <div className="flex gap-3">
+      <div key={event.id} className="flex gap-3">
         <div className="flex flex-col items-center">
-          <div className={`w-2.5 h-2.5 rounded-full mt-1.5 flex-shrink-0 ${cfg.dot}`} />
+          <div className={`w-2.5 h-2.5 rounded-full mt-1 flex-shrink-0 ${cfg.dot}`} />
           <div className="w-px flex-1 bg-stone-100 mt-1" />
         </div>
         <div className="flex-1 pb-3 min-w-0">
           <div className={`rounded-2xl border ${cfg.border} bg-white px-3 py-2.5`}>
+            {/* Journey tag */}
             {event.journeyTitle && (
               <Link href={`/care-journeys/${event.journeyId}`} className="block mb-1">
-                <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 inline-flex items-center gap-1">
+                <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700">
                   📋 {event.journeyTitle}
                 </span>
               </Link>
             )}
             <div className="flex items-start justify-between gap-2">
-              <div className="flex items-start gap-2 min-w-0">
+              <div className="min-w-0 flex items-start gap-2">
+                {/* Person color dot */}
                 <Link href={`/people/${event.personId}`}>
-                  <div className="w-6 h-6 rounded-full flex-shrink-0 mt-0.5 flex items-center justify-center text-[10px] font-bold text-white shadow-sm"
+                  <div
+                    className="w-5 h-5 rounded-full flex-shrink-0 mt-0.5 border-2 border-white shadow-sm"
                     style={{ backgroundColor: event.personColor }}
-                    title={event.personName}>
-                    {event.personName[0]}
-                  </div>
+                    title={event.personName}
+                  />
                 </Link>
                 <div className="min-w-0">
                   <p className="text-sm font-bold text-heading leading-tight truncate">{event.title}</p>
-                  <p className="text-xs text-stone-400 mt-0.5 truncate">
+                  <p className="text-xs text-stone-400 mt-0.5">
                     {event.personName}{event.subtitle ? ` · ${event.subtitle}` : ""}
                   </p>
                 </div>
               </div>
               <div className="text-right flex-shrink-0">
-                <p className={`text-xs font-bold ${isToday ? "text-[#3A3370]" : "text-stone-400"}`}>
+                <p className={`text-xs font-bold ${isToday ? "text-[#3A3370]" : "text-stone-500"}`}>
                   {formatDate(event.date)}
                 </p>
-                <p className="text-[10px] text-stone-300">{formatTime(event.date)}</p>
+                <p className="text-[10px] text-stone-400">{formatTime(event.date)}</p>
               </div>
             </div>
           </div>
@@ -169,35 +218,21 @@ export default async function HomePage() {
     <AppShell>
       <div className="px-4 pt-5 pb-10 space-y-5">
 
-        {/* People bar */}
-        <div className="space-y-2">
-          <p className="text-xs font-bold uppercase tracking-widest text-stone-400">Family</p>
-          <div className="grid grid-cols-2 gap-2">
-            {typedPeople.map((p) => {
-              const personAppts = typedAppts.filter((a) => a.person_id === p.id);
-              const nextAppt = personAppts[0];
-              const activeJourneys = typedJourneys.filter((j) => j.person_id === p.id);
-              return (
-                <Link key={p.id} href={`/people/${p.id}`}
-                  className="bg-white rounded-2xl shadow-card p-3 flex items-center gap-2.5 hover:shadow-md transition-shadow">
-                  <div className="w-9 h-9 rounded-full flex-shrink-0 flex items-center justify-center text-sm font-bold text-white shadow-sm"
-                    style={{ backgroundColor: p.color_hex ?? "#C7E6A3" }}>
-                    {p.display_name[0]}
-                  </div>
-                  <div className="min-w-0">
-                    <p className="text-sm font-bold text-heading leading-tight truncate">{p.display_name}</p>
-                    <p className="text-[10px] text-stone-400 truncate">
-                      {nextAppt
-                        ? `${nextAppt.title} · ${formatDate(nextAppt.starts_at)}`
-                        : activeJourneys.length > 0
-                          ? `${activeJourneys.length} active journey${activeJourneys.length > 1 ? "s" : ""}`
-                          : "No upcoming events"
-                      }
-                    </p>
-                  </div>
-                </Link>
-              );
-            })}
+        {/* Header */}
+        <div className="flex items-center justify-between">
+          <h1 className="text-xl font-extrabold text-heading">Family</h1>
+          <div className="flex gap-1.5">
+            {typedPeople.map((p) => (
+              <Link key={p.id} href={`/people/${p.id}`}>
+                <div
+                  className="w-8 h-8 rounded-full border-2 border-white shadow-sm flex items-center justify-center text-xs font-bold text-white"
+                  style={{ backgroundColor: p.color_hex ?? "#C7E6A3" }}
+                  title={p.display_name}
+                >
+                  {p.display_name[0]}
+                </div>
+              </Link>
+            ))}
           </div>
         </div>
 
@@ -219,7 +254,9 @@ export default async function HomePage() {
         {todayEvents.length > 0 && (
           <div className="space-y-1">
             <p className="text-xs font-bold uppercase tracking-widest text-[#3A3370]">Today</p>
-            {todayEvents.map((e) => <EventCard key={e.id} event={e} />)}
+            <div className="space-y-0">
+              {todayEvents.map(renderEvent)}
+            </div>
           </div>
         )}
 
@@ -227,17 +264,20 @@ export default async function HomePage() {
         {upcomingEvents.length > 0 && (
           <div className="space-y-1">
             <p className="text-xs font-bold uppercase tracking-widest text-stone-400">Upcoming</p>
-            {upcomingEvents.map((e) => <EventCard key={e.id} event={e} />)}
+            <div className="space-y-0">
+              {upcomingEvents.map(renderEvent)}
+            </div>
           </div>
         )}
 
         {events.length === 0 && (
           <div className="text-center py-10">
             <p className="text-3xl mb-2">🗓️</p>
-            <p className="text-sm font-bold text-heading">Nothing scheduled</p>
-            <p className="text-xs text-stone-400 mt-1">No upcoming events in the next 6 months</p>
+            <p className="text-sm font-bold text-heading">No upcoming events</p>
+            <p className="text-xs text-stone-400 mt-1">Nothing scheduled in the next 6 months</p>
           </div>
         )}
+
       </div>
     </AppShell>
   );

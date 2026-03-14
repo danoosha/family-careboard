@@ -1,7 +1,6 @@
 /**
  * app/api/auth/google/connect/route.ts
  * Initiates OAuth flow — redirects user to Google's consent screen
- * If user is not logged in, redirects to login first
  */
 
 import { NextRequest, NextResponse } from "next/server";
@@ -17,27 +16,23 @@ const SCOPES = [
 export async function GET(req: NextRequest) {
   const supabase = createClient();
   const { data: { user } } = await supabase.auth.getUser();
-  const appUrl = process.env.NEXT_PUBLIC_APP_URL!;
 
   if (!user) {
-    // Not logged in — send to login, then come back here after
-    const personId = req.nextUrl.searchParams.get("person_id") ?? "";
-    const returnTo = `/api/auth/google/connect?person_id=${personId}`;
-    return NextResponse.redirect(
-      `${appUrl}/login?next=${encodeURIComponent(returnTo)}`
-    );
+    return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
   }
 
+  // person_id is passed as query param so we know which family member this calendar is for
   const personId = req.nextUrl.searchParams.get("person_id") ?? "";
+
   const state = Buffer.from(JSON.stringify({ userId: user.id, personId })).toString("base64url");
 
   const params = new URLSearchParams({
     client_id: process.env.GOOGLE_CLIENT_ID!,
-    redirect_uri: `${appUrl}/api/auth/google/callback`,
+    redirect_uri: `${process.env.NEXT_PUBLIC_APP_URL}/api/auth/google/callback`,
     response_type: "code",
     scope: SCOPES,
     access_type: "offline",
-    prompt: "consent",
+    prompt: "consent", // always get refresh_token
     state,
   });
 

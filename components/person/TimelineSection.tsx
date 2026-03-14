@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 import { createClient } from "@/lib/supabase/client";
 import EmptyState from "@/components/ui/EmptyState";
 import EditAppointmentForm from "@/components/forms/EditAppointmentForm";
@@ -11,6 +12,7 @@ import type {
   PreventiveCheck,
   Vaccination,
   CareJourneyStep,
+  CareJourney,
 } from "@/types";
 
 interface DoctorBasic {
@@ -25,6 +27,7 @@ interface TimelineSectionProps {
   preventiveChecks: PreventiveCheck[];
   vaccinations: Vaccination[];
   careSteps: CareJourneyStep[];
+  careJourneys?: CareJourney[];
   doctors?: DoctorBasic[];
 }
 
@@ -42,59 +45,57 @@ type PersonTimelineItem = {
   title: string;
   date: string;
   subtitle?: string;
-  kind: "appointment" | "preventive" | "care_step";
+  kind: "appointment" | "preventive" | "care_step" | "journey_appointment";
   raw?: AppointmentFull;
+  journeyId?: string;
+  journeyTitle?: string;
 };
 
 type RecurringScope = "this" | "all";
-
 type ModalState =
   | { type: "none" }
   | { type: "edit"; appointment: AppointmentFull }
   | { type: "duplicate"; appointment: AppointmentFull }
   | { type: "confirm_cancel"; appointment: AppointmentFull; scope: RecurringScope }
-  | { type: "confirm_delete"; appointment: AppointmentFull; scope: RecurringScope };
+  | { type: "confirm_delete"; appointment: AppointmentFull; scope: RecurringScope }
+  | { type: "add_appointment"; journeyId?: string };
 
 type TimeRange = "week" | "month" | "6months" | "year";
 
 const TIME_RANGE_OPTIONS: { value: TimeRange; label: string }[] = [
-  { value: "week", label: "Week" },
-  { value: "month", label: "Month" },
+  { value: "week",    label: "Week" },
+  { value: "month",   label: "Month" },
   { value: "6months", label: "6 months" },
-  { value: "year", label: "Year" },
+  { value: "year",    label: "Year" },
 ];
 
 function getTimeRangeCutoff(range: TimeRange): Date {
   const d = new Date();
-  if (range === "week") d.setDate(d.getDate() + 7);
-  else if (range === "month") d.setMonth(d.getMonth() + 1);
+  if (range === "week")    d.setDate(d.getDate() + 7);
+  else if (range === "month")   d.setMonth(d.getMonth() + 1);
   else if (range === "6months") d.setMonth(d.getMonth() + 6);
-  else if (range === "year") d.setFullYear(d.getFullYear() + 1);
+  else if (range === "year")    d.setFullYear(d.getFullYear() + 1);
   return d;
 }
 
-/**
- * Care steps deduplication rule:
- * If a care_step's date is within 1 day of an appointment that belongs to the same
- * care_journey (i.e. appointment.care_journey_id is set), we skip the care_step —
- * the appointment already represents that event in the timeline.
- */
 function getAllTimelineItems({
   appointments,
   preventiveChecks,
   careSteps,
+  careJourneys = [],
   doctors = [],
 }: Omit<TimelineSectionProps, "person" | "vaccinations">): PersonTimelineItem[] {
   const items: PersonTimelineItem[] = [];
 
-  // Build a set of (journey_id, date) tuples from linked appointments
-  // so we can suppress care_steps that are already represented
+  // Build journey lookup
+  const journeyMap = new Map(careJourneys.map((j) => [j.id, j]));
+
+  // Track which (journey_id, date) pairs have a linked appointment
   const linkedApptDates = new Set<string>();
   for (const appt of appointments ?? []) {
     const full = appt as AppointmentFull;
     if (full.care_journey_id && appt.starts_at) {
-      const dateKey = `${full.care_journey_id}::${appt.starts_at.slice(0, 10)}`;
-      linkedApptDates.add(dateKey);
+      linkedApptDates.add(`${full.care_journey_id}::${appt.starts_at.slice(0, 10)}`);
     }
   }
 
@@ -104,39 +105,41 @@ function getAllTimelineItems({
     if (full.status === "cancelled") continue;
 
     const doctor = doctors.find((d) => d.id === full.doctor_id);
-    const doctorLabel = doctor ? doctor.doctor_name : null;
-    const locationLabel = appt.location || null;
+    const subtitleParts = [
+      doctor?.doctor_name ?? null,
+      appt.location ?? null,
+    ].filter(Boolean);
+    const subtitle = subtitleParts.join(" · ") || appt.notes || "";
 
-    const subtitleParts = [doctorLabel, locationLabel].filter(Boolean);
-    const subtitle = subtitleParts.length > 0
-      ? subtitleParts.join(" · ")
-      : appt.notes || "";
+    // If appointment is part of a journey → render as journey_appointment kind
+    const journey = full.care_journey_id ? journeyMap.get(full.care_journey_id) : null;
 
     items.push({
       id: `appt-${appt.id}`,
       title: appt.title || "Appointment",
       date: appt.starts_at,
       subtitle,
-      kind: "appointment",
+      kind: journey ? "journey_appointment" : "appointment",
       raw: full,
+      journeyId: journey?.id,
+      journeyTitle: journey?.title,
     });
   }
 
+  // Preventive checks
   for (const check of preventiveChecks ?? []) {
     const status = (check as any).status;
     const scheduledDate = (check as any).scheduled_date;
     const doneDate = (check as any).last_date;
-
     if (status === "scheduled" && scheduledDate) {
       items.push({
         id: `prev-${check.id}`,
         title: check.check_type || "Preventive check",
         date: scheduledDate,
-        subtitle: (check as any).notes || "",
+        subtitle: check.notes || "",
         kind: "preventive",
       });
     }
-
     if (status === "done" && doneDate) {
       items.push({
         id: `prev-done-${check.id}`,
@@ -148,75 +151,61 @@ function getAllTimelineItems({
     }
   }
 
-  // Care steps: only show if NOT already covered by a linked appointment
-  // on the same day within the same journey
+  // Care steps — suppressed if journey has a linked appointment on same date
   for (const step of careSteps ?? []) {
     if (!(step as any).step_date) continue;
-
-    const stepDate = (step as any).step_date as string;
-    const journeyId = step.care_journey_id;
-
-    // If there's a linked appointment for this journey on the same date → skip
-    const dateKey = `${journeyId}::${stepDate.slice(0, 10)}`;
-    if (linkedApptDates.has(dateKey)) continue;
-
+    const dateKey = `${step.care_journey_id}::${(step as any).step_date}`;
+    if (linkedApptDates.has(dateKey)) continue; // deduplicate
     items.push({
       id: `step-${step.id}`,
-      title: (step as any).title || (step as any).step_title || "Care step",
-      date: stepDate,
+      title: (step as any).title || "Care step",
+      date: (step as any).step_date,
       subtitle: (step as any).notes || "",
       kind: "care_step",
+      journeyId: step.care_journey_id,
     });
   }
 
-  return items.sort(
-    (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()
-  );
+  return items.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
 }
 
-function formatDateLabel(rawDate: string) {
-  const d = new Date(rawDate);
-  if (Number.isNaN(d.getTime())) return "";
-
-  const now = new Date();
-  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const startOfTarget = new Date(d.getFullYear(), d.getMonth(), d.getDate());
-  const diffDays = Math.round(
-    (startOfTarget.getTime() - startOfToday.getTime()) / (1000 * 60 * 60 * 24)
-  );
-
-  const timeStr = d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
-
-  if (diffDays === 0) return `Today ${timeStr}`;
-  if (diffDays === 1) return `Tomorrow ${timeStr}`;
-  if (diffDays > 1 && diffDays <= 7) return `In ${diffDays} days · ${timeStr}`;
-  if (diffDays < 0 && diffDays >= -7) return `${Math.abs(diffDays)}d ago · ${timeStr}`;
-
-  const dateStr = d.toLocaleDateString("en-GB", {
-    day: "numeric",
-    month: "short",
-    year: d.getFullYear() !== now.getFullYear() ? "numeric" : undefined,
-  });
-  return `${dateStr} · ${timeStr}`;
+function formatDate(dateStr: string) {
+  const d = new Date(dateStr);
+  const today = new Date(); today.setHours(0,0,0,0);
+  const tomorrow = new Date(today); tomorrow.setDate(tomorrow.getDate()+1);
+  const itemDay = new Date(d); itemDay.setHours(0,0,0,0);
+  if (itemDay.getTime() === today.getTime()) return "Today";
+  if (itemDay.getTime() === tomorrow.getTime()) return "Tomorrow";
+  return d.toLocaleDateString("en-GB", { day: "numeric", month: "short" });
 }
 
-function getKindLabel(kind: PersonTimelineItem["kind"]) {
-  switch (kind) {
-    case "appointment": return "Appointment";
-    case "preventive": return "Preventive care";
-    case "care_step": return "Care step";
-    default: return "";
-  }
+function formatTime(dateStr: string) {
+  const d = new Date(dateStr);
+  return d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
 }
 
-function getDotColor(kind: PersonTimelineItem["kind"], colorHex: string) {
-  switch (kind) {
-    case "appointment": return colorHex;
-    case "preventive": return "#F0C36A";
-    case "care_step": return "#8BC48A";
-    default: return colorHex;
-  }
-}
+const KIND_CONFIG = {
+  appointment: {
+    dot: "bg-[#3A3370]",
+    badge: null,
+    line: "border-[#3A3370]/20",
+  },
+  journey_appointment: {
+    dot: "bg-emerald-500",
+    badge: "bg-emerald-50 text-emerald-700",
+    line: "border-emerald-200",
+  },
+  preventive: {
+    dot: "bg-amber-400",
+    badge: "bg-amber-50 text-amber-700",
+    line: "border-amber-100",
+  },
+  care_step: {
+    dot: "bg-purple-400",
+    badge: "bg-purple-50 text-purple-700",
+    line: "border-purple-100",
+  },
+};
 
 export default function TimelineSection({
   person,
@@ -224,439 +213,285 @@ export default function TimelineSection({
   preventiveChecks,
   vaccinations,
   careSteps,
+  careJourneys = [],
   doctors = [],
 }: TimelineSectionProps) {
+  const sb = createClient();
   const [modal, setModal] = useState<ModalState>({ type: "none" });
-  const [localAppointments, setLocalAppointments] =
-    useState<Appointment[]>(appointments);
-  const [actionLoading, setActionLoading] = useState<string | null>(null);
+  const [timeRange, setTimeRange] = useState<TimeRange>("6months");
   const [showPast, setShowPast] = useState(false);
-  const [timeRange, setTimeRange] = useState<TimeRange>("month");
 
-  const supabase = createClient();
-
+  const allItems = getAllTimelineItems({ appointments, preventiveChecks, careSteps, careJourneys, doctors });
   const now = new Date();
   const cutoff = getTimeRangeCutoff(timeRange);
 
-  const allItems = getAllTimelineItems({
-    appointments: localAppointments,
-    preventiveChecks,
-    careSteps,
-    doctors,
+  const upcomingItems = allItems.filter((i) => {
+    const d = new Date(i.date);
+    return d >= now && d <= cutoff;
   });
+  const pastItems = allItems.filter((i) => new Date(i.date) < now);
 
-  const futureItems = allItems.filter(
-    (item) => {
-      const d = new Date(item.date);
-      return d >= now && d <= cutoff;
-    }
-  );
-
-  const pastItems = allItems
-    .filter((item) => new Date(item.date) < now)
-    .reverse();
-
-  // ─── Cancel ──────────────────────────────────────────────────────────────
   async function handleCancel(appt: AppointmentFull, scope: RecurringScope) {
-    setActionLoading(appt.id);
-
     if (scope === "all" && appt.recurring_group_id) {
-      const { error } = await supabase
-        .from("appointments")
-        .update({ status: "cancelled" })
+      await sb.from("appointments").update({ status: "cancelled" })
         .eq("recurring_group_id", appt.recurring_group_id);
-
-      if (!error) {
-        setLocalAppointments((prev) =>
-          prev.map((a) =>
-            (a as AppointmentFull).recurring_group_id === appt.recurring_group_id
-              ? { ...a, status: "cancelled" }
-              : a
-          )
-        );
-      }
     } else {
-      const { error } = await supabase
-        .from("appointments")
-        .update({ status: "cancelled" })
-        .eq("id", appt.id);
-
-      if (!error) {
-        setLocalAppointments((prev) =>
-          prev.map((a) =>
-            a.id === appt.id ? { ...a, status: "cancelled" } : a
-          )
-        );
-      }
+      await sb.from("appointments").update({ status: "cancelled" }).eq("id", appt.id);
     }
-
-    setActionLoading(null);
     setModal({ type: "none" });
+    window.location.reload();
   }
 
-  // ─── Delete ───────────────────────────────────────────────────────────────
   async function handleDelete(appt: AppointmentFull, scope: RecurringScope) {
-    setActionLoading(appt.id);
-
     if (scope === "all" && appt.recurring_group_id) {
-      const { error } = await supabase
-        .from("appointments")
-        .delete()
-        .eq("recurring_group_id", appt.recurring_group_id);
-
-      if (!error) {
-        setLocalAppointments((prev) =>
-          prev.filter(
-            (a) =>
-              (a as AppointmentFull).recurring_group_id !== appt.recurring_group_id
-          )
-        );
-      }
+      await sb.from("appointments").delete().eq("recurring_group_id", appt.recurring_group_id);
     } else {
-      const { error } = await supabase
-        .from("appointments")
-        .delete()
-        .eq("id", appt.id);
-
-      if (!error) {
-        setLocalAppointments((prev) => prev.filter((a) => a.id !== appt.id));
-      }
+      await sb.from("appointments").delete().eq("id", appt.id);
     }
-
-    setActionLoading(null);
-    setModal({ type: "none" });
-  }
-
-  function handleEditSuccess() {
     setModal({ type: "none" });
     window.location.reload();
   }
 
-  function handleDuplicateSuccess() {
-    setModal({ type: "none" });
-    window.location.reload();
+  function renderItem(item: PersonTimelineItem) {
+    const cfg = KIND_CONFIG[item.kind];
+    const isAppt = item.kind === "appointment" || item.kind === "journey_appointment";
+    const d = new Date(item.date);
+    const isToday = formatDate(item.date) === "Today";
+
+    return (
+      <div key={item.id} className="flex gap-3">
+        {/* Timeline spine */}
+        <div className="flex flex-col items-center">
+          <div className={`w-2.5 h-2.5 rounded-full mt-1 flex-shrink-0 ${cfg.dot} ${isToday ? "ring-2 ring-offset-1 ring-current" : ""}`} />
+          <div className="w-px flex-1 bg-stone-100 mt-1" />
+        </div>
+
+        {/* Content */}
+        <div className={`flex-1 pb-4 min-w-0`}>
+          <div className={`rounded-2xl border px-3 py-2.5 ${cfg.line} bg-white`}>
+            {/* Journey badge */}
+            {item.journeyTitle && (
+              <Link href={`/care-journeys/${item.journeyId}`} className="block mb-1">
+                <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${cfg.badge} inline-flex items-center gap-1`}>
+                  📋 {item.journeyTitle}
+                </span>
+              </Link>
+            )}
+
+            <div className="flex items-start justify-between gap-2">
+              <div className="min-w-0">
+                <p className="text-sm font-bold text-heading leading-tight truncate">{item.title}</p>
+                {item.subtitle && (
+                  <p className="text-xs text-stone-400 mt-0.5 truncate">{item.subtitle}</p>
+                )}
+              </div>
+              <div className="text-right flex-shrink-0">
+                <p className={`text-xs font-bold ${isToday ? "text-[#3A3370]" : "text-stone-500"}`}>
+                  {formatDate(item.date)}
+                </p>
+                <p className="text-[10px] text-stone-400">{formatTime(item.date)}</p>
+              </div>
+            </div>
+
+            {/* Actions for appointments */}
+            {isAppt && item.raw && (
+              <div className="flex items-center gap-3 mt-2 pt-2 border-t border-stone-100">
+                <button
+                  onClick={() => setModal({ type: "edit", appointment: item.raw! })}
+                  className="text-[11px] font-semibold text-[#3A3370]"
+                >Edit</button>
+                <button
+                  onClick={() => setModal({ type: "duplicate", appointment: item.raw! })}
+                  className="text-[11px] font-semibold text-stone-400"
+                >Duplicate</button>
+                <button
+                  onClick={() => setModal({ type: "confirm_cancel", appointment: item.raw!, scope: "this" })}
+                  className="text-[11px] font-semibold text-amber-500"
+                >Cancel</button>
+                <button
+                  onClick={() => setModal({ type: "confirm_delete", appointment: item.raw!, scope: "this" })}
+                  className="text-[11px] font-semibold text-red-400"
+                >Delete</button>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    );
   }
 
   return (
-    <>
-      {/* ── Time range filter ─────────────────────────────────────────── */}
-      <div className="flex gap-1.5 mb-3">
-        {TIME_RANGE_OPTIONS.map((opt) => (
-          <button
-            key={opt.value}
-            type="button"
-            onClick={() => setTimeRange(opt.value)}
-            className={`flex-1 py-1.5 rounded-full text-xs font-bold transition-colors ${
-              timeRange === opt.value
-                ? "bg-[#3A3370] text-white"
-                : "bg-white border border-stone-200 text-stone-500"
-            }`}
-          >
-            {opt.label}
-          </button>
+    <div className="space-y-3">
+      {/* Controls row */}
+      <div className="flex items-center justify-between gap-2">
+        {/* Time range filter */}
+        <div className="flex gap-1 bg-stone-100 rounded-xl p-0.5">
+          {TIME_RANGE_OPTIONS.map((opt) => (
+            <button
+              key={opt.value}
+              onClick={() => setTimeRange(opt.value)}
+              className={`text-[11px] font-bold px-2.5 py-1 rounded-lg transition-colors ${
+                timeRange === opt.value
+                  ? "bg-white text-[#3A3370] shadow-sm"
+                  : "text-stone-400"
+              }`}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
+        {/* Add appointment */}
+        <button
+          onClick={() => setModal({ type: "add_appointment" })}
+          className="text-xs font-bold px-3 py-1.5 rounded-full bg-[#3A3370] text-white"
+        >
+          + Add
+        </button>
+      </div>
+
+      {/* Legend */}
+      <div className="flex gap-3 flex-wrap">
+        {[
+          { dot: "bg-[#3A3370]", label: "Appointment" },
+          { dot: "bg-emerald-500", label: "In Journey" },
+          { dot: "bg-purple-400", label: "Step" },
+          { dot: "bg-amber-400", label: "Preventive" },
+        ].map((l) => (
+          <div key={l.label} className="flex items-center gap-1">
+            <div className={`w-2 h-2 rounded-full ${l.dot}`} />
+            <span className="text-[10px] text-stone-400 font-medium">{l.label}</span>
+          </div>
         ))}
       </div>
 
-      {/* ── Upcoming ──────────────────────────────────────────────────── */}
-      {futureItems.length === 0 ? (
-        <div className="bg-white rounded-3xl shadow-card">
-          <EmptyState icon="🗓️" title={`No upcoming events in the next ${TIME_RANGE_OPTIONS.find(o => o.value === timeRange)?.label.toLowerCase()}`} compact />
-        </div>
+      {/* Upcoming items */}
+      {upcomingItems.length === 0 ? (
+        <EmptyState icon="🗓️" title="No upcoming events" subtitle={`Nothing in the next ${timeRange === "6months" ? "6 months" : timeRange}`} compact />
       ) : (
-        <div className="bg-white rounded-3xl shadow-card divide-y divide-border">
-          {futureItems.map((item) => (
-            <TimelineRow
-              key={item.id}
-              item={item}
-              person={person}
-              onEdit={(appt) => setModal({ type: "edit", appointment: appt })}
-              onDuplicate={(appt) => setModal({ type: "duplicate", appointment: appt })}
-              onCancel={(appt) => setModal({ type: "confirm_cancel", appointment: appt, scope: "this" })}
-              onDelete={(appt) => setModal({ type: "confirm_delete", appointment: appt, scope: "this" })}
-            />
-          ))}
+        <div className="space-y-0">
+          {upcomingItems.map(renderItem)}
         </div>
       )}
 
-      {/* ── Past toggle ───────────────────────────────────────────────── */}
-      <button
-        type="button"
-        onClick={() => setShowPast((v) => !v)}
-        className="w-full mt-3 py-2 rounded-2xl border border-stone-200 text-xs font-bold text-stone-500 bg-white flex items-center justify-center gap-1.5"
-      >
-        <span>{showPast ? "▲" : "▼"}</span>
-        {showPast ? "Hide past events" : `Show past events${pastItems.length > 0 ? ` (${pastItems.length})` : ""}`}
-      </button>
-
-      {/* ── Past items ────────────────────────────────────────────────── */}
-      {showPast && (
-        <div className="mt-2">
-          {pastItems.length === 0 ? (
-            <div className="bg-white rounded-3xl shadow-card">
-              <EmptyState icon="📋" title="No past events" compact />
-            </div>
-          ) : (
-            <div className="bg-white rounded-3xl shadow-card divide-y divide-border opacity-75">
-              {pastItems.map((item) => (
-                <TimelineRow
-                  key={item.id}
-                  item={item}
-                  person={person}
-                  isPast
-                  onEdit={(appt) => setModal({ type: "edit", appointment: appt })}
-                  onDuplicate={(appt) => setModal({ type: "duplicate", appointment: appt })}
-                  onCancel={(appt) => setModal({ type: "confirm_cancel", appointment: appt, scope: "this" })}
-                  onDelete={(appt) => setModal({ type: "confirm_delete", appointment: appt, scope: "this" })}
-                />
-              ))}
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* ── Edit modal ───────────────────────────────────────────────── */}
-      {modal.type === "edit" && (
-        <Modal title="Edit appointment" onClose={() => setModal({ type: "none" })}>
-          <EditAppointmentForm
-            appointment={modal.appointment}
-            onSuccess={handleEditSuccess}
-            onCancel={() => setModal({ type: "none" })}
-          />
-        </Modal>
-      )}
-
-      {/* ── Duplicate modal ──────────────────────────────────────────── */}
-      {modal.type === "duplicate" && (
-        <Modal title="Duplicate appointment" onClose={() => setModal({ type: "none" })}>
-          <AddAppointmentForm
-            onSuccess={handleDuplicateSuccess}
-            onCancel={() => setModal({ type: "none" })}
-            duplicateFrom={{
-              person_id: modal.appointment.person_id,
-              doctor_id: modal.appointment.doctor_id,
-              care_journey_id: modal.appointment.care_journey_id,
-              appointment_type: modal.appointment.appointment_type,
-              title: modal.appointment.title,
-              location: modal.appointment.location,
-              notes: modal.appointment.notes,
-            }}
-          />
-        </Modal>
-      )}
-
-      {/* ── Confirm cancel ───────────────────────────────────────────── */}
-      {modal.type === "confirm_cancel" && (
-        <Modal title="Cancel appointment?" onClose={() => setModal({ type: "none" })}>
-          <p className="text-sm text-stone-600 mb-4">
-            This appointment will be marked as cancelled but kept in history.
-          </p>
-          {modal.appointment.is_recurring && modal.appointment.recurring_group_id && (
-            <RecurringScopeSelector
-              scope={modal.scope}
-              onChange={(s) =>
-                setModal((prev) =>
-                  prev.type === "confirm_cancel" ? { ...prev, scope: s } : prev
-                )
-              }
-              actionLabel="cancel"
-            />
-          )}
-          <div className="flex gap-2 mt-4">
-            <button
-              onClick={() => setModal({ type: "none" })}
-              className="flex-1 py-3 rounded-2xl border border-border text-sm font-bold text-muted"
-            >
-              Back
-            </button>
-            <button
-              onClick={() => handleCancel(modal.appointment, modal.scope)}
-              disabled={!!actionLoading}
-              className="flex-1 py-3 rounded-2xl bg-amber-100 text-amber-700 text-sm font-bold disabled:opacity-60"
-            >
-              {actionLoading ? "Cancelling…" : "Yes, cancel"}
-            </button>
-          </div>
-        </Modal>
-      )}
-
-      {/* ── Confirm delete ───────────────────────────────────────────── */}
-      {modal.type === "confirm_delete" && (
-        <Modal title="Delete appointment?" onClose={() => setModal({ type: "none" })}>
-          <p className="text-sm text-stone-600 mb-4">
-            This will permanently delete the appointment. This cannot be undone.
-          </p>
-          {modal.appointment.is_recurring && modal.appointment.recurring_group_id && (
-            <RecurringScopeSelector
-              scope={modal.scope}
-              onChange={(s) =>
-                setModal((prev) =>
-                  prev.type === "confirm_delete" ? { ...prev, scope: s } : prev
-                )
-              }
-              actionLabel="delete"
-            />
-          )}
-          <div className="flex gap-2 mt-4">
-            <button
-              onClick={() => setModal({ type: "none" })}
-              className="flex-1 py-3 rounded-2xl border border-border text-sm font-bold text-muted"
-            >
-              Back
-            </button>
-            <button
-              onClick={() => handleDelete(modal.appointment, modal.scope)}
-              disabled={!!actionLoading}
-              className="flex-1 py-3 rounded-2xl bg-red-100 text-red-600 text-sm font-bold disabled:opacity-60"
-            >
-              {actionLoading ? "Deleting…" : "Yes, delete"}
-            </button>
-          </div>
-        </Modal>
-      )}
-    </>
-  );
-}
-
-// ─── TimelineRow ─────────────────────────────────────────────────────────────
-function TimelineRow({
-  item,
-  person,
-  isPast = false,
-  onEdit,
-  onDuplicate,
-  onCancel,
-  onDelete,
-}: {
-  item: PersonTimelineItem;
-  person: Person;
-  isPast?: boolean;
-  onEdit: (appt: AppointmentFull) => void;
-  onDuplicate: (appt: AppointmentFull) => void;
-  onCancel: (appt: AppointmentFull) => void;
-  onDelete: (appt: AppointmentFull) => void;
-}) {
-  return (
-    <div className="px-4 py-3 flex items-start gap-3">
-      <div
-        className="w-3 h-3 rounded-full mt-1.5 flex-shrink-0"
-        style={{
-          backgroundColor: getDotColor(item.kind, person.color_hex),
-          opacity: isPast ? 0.5 : 1,
-        }}
-      />
-
-      <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-1.5">
-          <p className="text-sm font-semibold text-heading leading-tight">
-            {item.title}
-          </p>
-          {item.raw?.is_recurring && (
-            <span className="text-[10px] text-stone-400" title="Recurring">🔁</span>
-          )}
-        </div>
-        <p className="text-xs text-stone-500 mt-0.5">
-          {getKindLabel(item.kind)}
-        </p>
-        {item.subtitle && (
-          <p className="text-xs text-stone-500 mt-1 italic leading-relaxed">
-            {item.subtitle}
-          </p>
-        )}
-
-        {/* Action buttons — only for appointments */}
-        {item.kind === "appointment" && item.raw && (
-          <div className="flex gap-2 mt-2">
-            <button
-              onClick={() => onEdit(item.raw!)}
-              className="text-xs text-blue-500 font-medium hover:underline"
-            >
-              Edit
-            </button>
-            <span className="text-xs text-stone-300">·</span>
-            <button
-              onClick={() => onDuplicate(item.raw!)}
-              className="text-xs text-stone-500 font-medium hover:underline"
-            >
-              Duplicate
-            </button>
-            {!isPast && (
-              <>
-                <span className="text-xs text-stone-300">·</span>
-                <button
-                  onClick={() => onCancel(item.raw!)}
-                  className="text-xs text-amber-500 font-medium hover:underline"
-                >
-                  Cancel
-                </button>
-              </>
-            )}
-            <span className="text-xs text-stone-300">·</span>
-            <button
-              onClick={() => onDelete(item.raw!)}
-              className="text-xs text-red-400 font-medium hover:underline"
-            >
-              Delete
-            </button>
-          </div>
-        )}
-      </div>
-
-      <div className={`text-xs whitespace-nowrap ${isPast ? "text-stone-400" : "text-stone-500"}`}>
-        {formatDateLabel(item.date)}
-      </div>
-    </div>
-  );
-}
-
-// ─── Recurring scope radio ────────────────────────────────────────────────────
-function RecurringScopeSelector({
-  scope,
-  onChange,
-  actionLabel,
-}: {
-  scope: RecurringScope;
-  onChange: (s: RecurringScope) => void;
-  actionLabel: string;
-}) {
-  return (
-    <div className="rounded-2xl border border-stone-200 divide-y divide-stone-100 overflow-hidden">
-      {(["this", "all"] as RecurringScope[]).map((s) => (
-        <label
-          key={s}
-          className={`flex items-center gap-3 px-4 py-3 cursor-pointer transition-colors ${
-            scope === s ? "bg-stone-50" : "bg-white"
-          }`}
+      {/* Past toggle */}
+      {pastItems.length > 0 && (
+        <button
+          onClick={() => setShowPast((v) => !v)}
+          className="w-full text-xs font-semibold text-stone-400 py-2 flex items-center justify-center gap-1"
         >
-          <input
-            type="radio"
-            name="recurring_scope"
-            value={s}
-            checked={scope === s}
-            onChange={() => onChange(s)}
-            className="accent-[#3A3370]"
-          />
-          <span className="text-sm text-heading font-medium">
-            {s === "this"
-              ? `${actionLabel === "cancel" ? "Cancel" : "Delete"} this appointment only`
-              : `${actionLabel === "cancel" ? "Cancel" : "Delete"} all recurring appointments`}
-          </span>
-        </label>
-      ))}
-    </div>
-  );
-}
+          {showPast ? "▲ Hide" : "▼ Show"} past events ({pastItems.length})
+        </button>
+      )}
 
-// ─── Modal ────────────────────────────────────────────────────────────────────
-function Modal({ title, onClose, children }: { title: string; onClose: () => void; children: React.ReactNode }) {
-  return (
-    <div className="fixed inset-0 z-50 bg-black/35 flex items-end sm:items-center justify-center">
-      <div className="bg-white w-full sm:max-w-lg rounded-t-3xl sm:rounded-3xl p-5 shadow-2xl max-h-[90vh] overflow-y-auto">
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="text-lg font-bold text-heading">{title}</h2>
-          <button onClick={onClose} className="text-stone-400 hover:text-stone-600 text-xl leading-none">✕</button>
+      {showPast && (
+        <div className="space-y-0 opacity-60">
+          {[...pastItems].reverse().map(renderItem)}
         </div>
-        {children}
-      </div>
+      )}
+
+      {/* Modals */}
+      {modal.type === "add_appointment" && (
+        <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 backdrop-blur-sm">
+          <div className="bg-white rounded-t-3xl w-full max-w-lg max-h-[90dvh] overflow-y-auto">
+            <div className="flex justify-center pt-3 pb-1"><div className="w-10 h-1 rounded-full bg-gray-200" /></div>
+            <div className="flex items-center justify-between px-5 py-3 border-b border-stone-100">
+              <h2 className="font-extrabold text-heading">Add Appointment</h2>
+              <button onClick={() => setModal({ type: "none" })} className="p-1.5 rounded-full bg-stone-100 text-stone-500">✕</button>
+            </div>
+            <div className="px-5 py-5">
+              <AddAppointmentForm
+                onSuccess={() => { setModal({ type: "none" }); window.location.reload(); }}
+                onCancel={() => setModal({ type: "none" })}
+                initialPersonId={person.id}
+                initialCareJourneyId={(modal as any).journeyId ?? ""}
+              />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {modal.type === "edit" && (
+        <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 backdrop-blur-sm">
+          <div className="bg-white rounded-t-3xl w-full max-w-lg max-h-[90dvh] overflow-y-auto">
+            <div className="flex justify-center pt-3 pb-1"><div className="w-10 h-1 rounded-full bg-gray-200" /></div>
+            <div className="flex items-center justify-between px-5 py-3 border-b border-stone-100">
+              <h2 className="font-extrabold text-heading">Edit Appointment</h2>
+              <button onClick={() => setModal({ type: "none" })} className="p-1.5 rounded-full bg-stone-100 text-stone-500">✕</button>
+            </div>
+            <div className="px-5 py-5">
+              <EditAppointmentForm
+                appointment={modal.appointment}
+                onSuccess={() => { setModal({ type: "none" }); window.location.reload(); }}
+                onCancel={() => setModal({ type: "none" })}
+              />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {modal.type === "duplicate" && (
+        <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 backdrop-blur-sm">
+          <div className="bg-white rounded-t-3xl w-full max-w-lg max-h-[90dvh] overflow-y-auto">
+            <div className="flex justify-center pt-3 pb-1"><div className="w-10 h-1 rounded-full bg-gray-200" /></div>
+            <div className="flex items-center justify-between px-5 py-3 border-b border-stone-100">
+              <h2 className="font-extrabold text-heading">Duplicate Appointment</h2>
+              <button onClick={() => setModal({ type: "none" })} className="p-1.5 rounded-full bg-stone-100 text-stone-500">✕</button>
+            </div>
+            <div className="px-5 py-5">
+              <AddAppointmentForm
+                onSuccess={() => { setModal({ type: "none" }); window.location.reload(); }}
+                onCancel={() => setModal({ type: "none" })}
+                duplicateFrom={modal.appointment}
+              />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {(modal.type === "confirm_cancel" || modal.type === "confirm_delete") && (
+        <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 backdrop-blur-sm">
+          <div className="bg-white rounded-t-3xl w-full max-w-lg px-5 py-6">
+            <p className="font-extrabold text-heading text-center mb-1">
+              {modal.type === "confirm_cancel" ? "Cancel appointment?" : "Delete appointment?"}
+            </p>
+            <p className="text-sm text-stone-500 text-center mb-5">
+              {modal.appointment.title}
+            </p>
+            {modal.appointment.is_recurring && (
+              <div className="flex gap-2 mb-4">
+                {(["this", "all"] as RecurringScope[]).map((s) => (
+                  <button
+                    key={s}
+                    onClick={() => setModal({ ...modal, scope: s } as any)}
+                    className={`flex-1 py-2 rounded-2xl text-sm font-bold border ${
+                      modal.scope === s ? "bg-[#3A3370] text-white border-[#3A3370]" : "border-stone-200 text-stone-500"
+                    }`}
+                  >
+                    {s === "this" ? "This only" : "All recurring"}
+                  </button>
+                ))}
+              </div>
+            )}
+            <div className="flex gap-2">
+              <button onClick={() => setModal({ type: "none" })}
+                className="flex-1 py-3 rounded-2xl border border-stone-200 text-sm font-bold text-stone-500">
+                Keep
+              </button>
+              <button
+                onClick={() => modal.type === "confirm_cancel"
+                  ? handleCancel(modal.appointment, modal.scope)
+                  : handleDelete(modal.appointment, modal.scope)
+                }
+                className={`flex-1 py-3 rounded-2xl text-sm font-bold text-white ${
+                  modal.type === "confirm_cancel" ? "bg-amber-500" : "bg-red-500"
+                }`}
+              >
+                {modal.type === "confirm_cancel" ? "Cancel it" : "Delete"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

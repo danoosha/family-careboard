@@ -1,8 +1,4 @@
-"use client";
-
 import Link from "next/link";
-import { useState } from "react";
-import AddCareJourneyForm from "@/components/care-journeys/AddCareJourneyForm";
 import type { CareJourney, CareJourneyStep } from "@/types";
 
 const STATUS_META: Record<string, { label: string; className: string }> = {
@@ -27,24 +23,22 @@ interface Props {
   journeys: CareJourney[];
   steps: CareJourneyStep[];
   personColorHex: string;
-  personId: string;
 }
 
-export default function CareJourneysSection({ journeys, steps, personColorHex, personId }: Props) {
-  const [showAddForm, setShowAddForm] = useState(false);
+export default function CareJourneysSection({ journeys, steps, personColorHex }: Props) {
+  if (journeys.length === 0) {
+    return (
+      <div className="bg-white rounded-3xl shadow-card px-4 py-5 text-center">
+        <p className="text-sm text-stone-400">No care journeys yet</p>
+      </div>
+    );
+  }
 
   const statusOrder: Record<string, number> = { active: 0, paused: 1, completed: 2, cancelled: 3 };
   const sorted = [...journeys].sort((a, b) => (statusOrder[a.status] ?? 9) - (statusOrder[b.status] ?? 9));
 
   return (
     <div className="space-y-2">
-      {/* Journey cards */}
-      {sorted.length === 0 && !showAddForm && (
-        <div className="bg-white rounded-3xl shadow-card px-4 py-5 text-center">
-          <p className="text-sm text-stone-400">No care journeys yet</p>
-        </div>
-      )}
-
       {sorted.map((journey) => {
         const meta = STATUS_META[journey.status] ?? STATUS_META.active;
         const nextStep = getNextStep(steps, journey.id);
@@ -64,61 +58,33 @@ export default function CareJourneysSection({ journeys, steps, personColorHex, p
                 <div className="min-w-0">
                   <p className="text-sm font-bold text-heading leading-tight">{journey.title}</p>
                   <div className="flex items-center gap-1.5 mt-1 flex-wrap">
-                    <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${meta.className}`}>
+                    <span className={`text-[11px] font-semibold px-2 py-0.5 rounded-full ${meta.className}`}>
                       {meta.label}
                     </span>
-                    {journeyStepCount > 0 && (
-                      <span className="text-[10px] text-stone-400">{journeyStepCount} step{journeyStepCount !== 1 ? "s" : ""}</span>
+                    <span className="text-[11px] text-stone-400">
+                      {journeyStepCount} step{journeyStepCount !== 1 ? "s" : ""}
+                    </span>
+                    {needsAttention && (
+                      <span className="text-[11px] font-semibold text-amber-500">· No next step</span>
                     )}
                   </div>
                 </div>
               </div>
-              <span className="text-stone-300 text-sm flex-shrink-0">›</span>
+              <span className="text-stone-300 text-sm flex-shrink-0 mt-0.5">›</span>
             </div>
 
             {nextStep && (
-              <div className="mt-2 pt-2 border-t border-stone-100 flex items-center gap-1.5">
-                <span className="text-[10px] font-bold text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-full">
-                  Next: {nextStep.title}
-                </span>
+              <div className="mt-2.5 ml-4 pl-2.5 border-l-2 border-emerald-200">
+                <p className="text-[11px] font-bold text-emerald-600 uppercase tracking-wide">Next</p>
+                <p className="text-xs font-medium text-stone-700">{nextStep.title}</p>
                 {nextStep.step_date && (
-                  <span className="text-[10px] text-stone-400">{formatDate(nextStep.step_date)}</span>
+                  <p className="text-[11px] text-stone-400">{formatDate(nextStep.step_date)}</p>
                 )}
-              </div>
-            )}
-
-            {needsAttention && (
-              <div className="mt-2 pt-2 border-t border-stone-100">
-                <span className="text-[10px] font-bold text-amber-600 bg-amber-50 px-2 py-0.5 rounded-full">
-                  ⚠ No upcoming step
-                </span>
               </div>
             )}
           </Link>
         );
       })}
-
-      {/* Add form inline */}
-      {showAddForm && (
-        <div className="bg-white rounded-3xl shadow-card p-4">
-          <p className="text-sm font-bold text-heading mb-3">New Care Journey</p>
-          <AddCareJourneyForm
-            personId={personId}
-            onSuccess={() => { setShowAddForm(false); window.location.reload(); }}
-            onCancel={() => setShowAddForm(false)}
-          />
-        </div>
-      )}
-
-      {/* Add button */}
-      {!showAddForm && (
-        <button
-          onClick={() => setShowAddForm(true)}
-          className="w-full py-2.5 rounded-2xl border border-dashed border-stone-200 text-sm font-semibold text-stone-400 hover:border-stone-400 hover:text-stone-600 transition-colors"
-        >
-          + New Journey
-        </button>
-      )}
     </div>
   );
 }
